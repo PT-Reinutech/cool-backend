@@ -1,72 +1,132 @@
-# File: auth.py (complete implementation with real failed attempt logging)
+# File: auth.py (Enhanced with IP-based cooldown)
 
-from passlib.context import CryptContext
-from jose import JWTError, jwt
-from datetime import datetime, timedelta
-from fastapi import HTTPException, status
-from sqlalchemy.orm import Session
-from typing import Optional
-import os
+import jwt
+import bcrypt
 import uuid
-import json
-import re
-
+from datetime import datetime, timedelta
+from typing import Optional
+from sqlalchemy.orm import Session
+from sqlalchemy import and_, func
+from fastapi import HTTPException, status
 from models import User, UserLog, FailedLoginAttempt, SecurityEvent
-from schemas import UserCreate
 
-# Security configuration
-SECRET_KEY = os.getenv("SECRET_KEY", "your-super-secret-key-change-in-production")
+# Enhanced Configuration
+SECRET_KEY = "koronka_iot_secret_key_2024"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 480  # 8 hours
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# User-based limits
 MAX_LOGIN_ATTEMPTS = 5
 COOLDOWN_MINUTES = 15
-MAX_FAILED_ATTEMPTS_PER_IP = 10  # Per hour
-SUSPICIOUS_USER_AGENTS = ['curl', 'wget', 'python-requests', 'bot', 'crawler', 'scanner']
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# IP-based limits (NEW)
+MAX_IP_ATTEMPTS = 10        # Max failed attempts from same IP
+IP_COOLDOWN_MINUTES = 30   # IP cooldown duration 
+MAX_FAILED_ATTEMPTS_PER_IP = 15  # Total failed attempts per IP per hour
 
 class AuthManager:
+    def __init__(self):
+        self.pwd_context = bcrypt
     
     def verify_password(self, plain_password: str, hashed_password: str) -> bool:
         """Verify password against hash"""
-        try:
-            return pwd_context.verify(plain_password, hashed_password)
-        except Exception as e:
-            print(f"Password verification error: {e}")
-            # Fallback comparison for development
-            return plain_password == hashed_password
+        return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
     
     def get_password_hash(self, password: str) -> str:
         """Hash password"""
-        try:
-            return pwd_context.hash(password)
-        except Exception as e:
-            print(f"Password hashing error: {e}")
-            # Fallback for development
-            return password
+        return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
     
     def create_access_token(self, data: dict, expires_delta: Optional[timedelta] = None):
         """Create JWT access token"""
-        try:
-            to_encode = data.copy()
-            if expires_delta:
-                expire = datetime.utcnow() + expires_delta
-            else:
-                expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        to_encode = data.copy()
+        if expires_delta:
+            expire = datetime.utcnow() + expires_delta
+        else:
+            expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        
+        to_encode.update({"exp": expire})
+        encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+        return encoded_jwt
+    
+    # 🆕 NEW: IP-based cooldown checking
+    def check_ip_cooldown(self, db: Session, client_ip: str) -> dict:
+        """
+        Check if IP is in cooldown period
+        Returns: {
+            'is_blocked': bool,
+            'remaining_time': int (seconds),
+            'failed_attempts': int,
+            'cooldown_until': datetime
+        }
+        """
+        if not client_ip or client_ip == "unknown":
+            return {'is_blocked': False, 'remaining_time': 0, 'failed_attempts': 0, 'cooldown_until': None}
+        
+        # Check for recent failed attempts from this IP
+        last_hour = datetime.utcnow() - timedelta(hours=1)
+        last_cooldown_period = datetime.utcnow() - timedelta(minutes=IP_COOLDOWN_MINUTES)
+        
+        # Count failed attempts from this IP in the last cooldown period
+        recent_failures = db.query(FailedLoginAttempt).filter(
+            and_(
+                FailedLoginAttempt.ip_address == client_ip,
+                FailedLoginAttempt.attempt_time >= last_cooldown_period
+            )
+        ).order_by(FailedLoginAttempt.attempt_time.desc()).all()
+        
+        if len(recent_failures) >= MAX_IP_ATTEMPTS:
+            # IP is in cooldown
+            latest_attempt = recent_failures[0].attempt_time
+            cooldown_until = latest_attempt + timedelta(minutes=IP_COOLDOWN_MINUTES)
             
-            to_encode.update({"exp": expire})
-            encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-            return encoded_jwt
-        except Exception as e:
-            print(f"JWT creation error: {e}")
-            # Simple token fallback
-            return f"token_{data['sub']}_{int(datetime.utcnow().timestamp())}"
+            if cooldown_until > datetime.utcnow():
+                remaining_seconds = int((cooldown_until - datetime.utcnow()).total_seconds())
+                
+                print(f"🚫 IP {client_ip} is in cooldown. {len(recent_failures)} attempts. {remaining_seconds}s remaining")
+                
+                return {
+                    'is_blocked': True,
+                    'remaining_time': remaining_seconds,
+                    'failed_attempts': len(recent_failures),
+                    'cooldown_until': cooldown_until
+                }
+        
+        return {
+            'is_blocked': False,
+            'remaining_time': 0,
+            'failed_attempts': len(recent_failures),
+            'cooldown_until': None
+        }
+    
+    # 🆕 NEW: IP-based attempt tracking
+    def increment_ip_failed_attempts(self, db: Session, client_ip: str, username: str, 
+                                   failure_reason: str, user_agent: str = None):
+        """
+        Track failed attempts by IP address
+        """
+        if not client_ip or client_ip == "unknown":
+            return
+        
+        # Log the failed attempt
+        self.log_failed_attempt(db, username, client_ip, user_agent, failure_reason)
+        
+        # Check if this IP should be flagged
+        ip_status = self.check_ip_cooldown(db, client_ip)
+        
+        if ip_status['failed_attempts'] >= MAX_IP_ATTEMPTS:
+            # Log security event
+            self._log_security_event(
+                db, "IP_COOLDOWN_TRIGGERED", "HIGH", client_ip, user_agent, username,
+                f"IP {client_ip} triggered cooldown after {ip_status['failed_attempts']} failed attempts"
+            )
+            
+            print(f"🚨 IP {client_ip} has been put into {IP_COOLDOWN_MINUTES}-minute cooldown")
     
     def get_user_by_username(self, db: Session, username: str) -> Optional[User]:
         """Get user by username"""
         return db.query(User).filter(User.username == username.lower()).first()
     
-    def create_user(self, db: Session, user_data: UserCreate) -> User:
+    def create_user(self, db: Session, user_data) -> User:
         """Create new user"""
         hashed_password = self.get_password_hash(user_data.password)
         
@@ -80,54 +140,79 @@ class AuthManager:
         db.refresh(db_user)
         return db_user
     
+    # 🔧 ENHANCED: Authentication with IP cooldown
     def authenticate_user(self, db: Session, username: str, password: str, 
                          client_ip: str = None, user_agent: str = None) -> Optional[User]:
-        """Authenticate user with comprehensive security checks"""
+        """Authenticate user with IP-based cooldown protection"""
         
-        # Check for suspicious activity first
+        # 🆕 STEP 1: Check IP cooldown FIRST
+        ip_status = self.check_ip_cooldown(db, client_ip)
+        if ip_status['is_blocked']:
+            print(f"🚫 Authentication blocked - IP {client_ip} in cooldown for {ip_status['remaining_time']}s")
+            
+            # Log the blocked attempt
+            self.log_failed_attempt(db, username, client_ip, user_agent, "IP_COOLDOWN_BLOCKED")
+            
+            # Return None to indicate authentication failure
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"IP address dalam cooldown. Tunggu {ip_status['remaining_time']} detik.",
+                headers={"Retry-After": str(ip_status['remaining_time'])}
+            )
+        
+        # STEP 2: Check for suspicious activity
         if self._is_suspicious_activity(db, client_ip, user_agent):
             self._log_security_event(db, "SUSPICIOUS_ACTIVITY", "HIGH", client_ip, 
                                    user_agent, username, "Suspicious login pattern detected")
         
+        # STEP 3: Check if user exists
         user = self.get_user_by_username(db, username)
-        
         if not user:
-            # Log failed attempt - invalid username
-            self.log_failed_attempt(db, username, client_ip, user_agent, "INVALID_USERNAME")
+            # Increment IP failed attempts for invalid username
+            self.increment_ip_failed_attempts(db, client_ip, username, "INVALID_USERNAME", user_agent)
             return None
         
-        # Check if user is in cooldown
+        # STEP 4: Check user-level cooldown
         if user.cooldown_until and user.cooldown_until > datetime.utcnow():
-            self.log_failed_attempt(db, username, client_ip, user_agent, "ACCOUNT_LOCKED")
+            # Increment IP failed attempts for account locked
+            self.increment_ip_failed_attempts(db, client_ip, username, "ACCOUNT_LOCKED", user_agent)
             return None
         
+        # STEP 5: Verify password
         if not self.verify_password(password, user.password_hash):
-            # Increment login attempts
+            # Increment user login attempts
             user.login_attempts += 1
             
-            # Log failed attempt - invalid password
-            self.log_failed_attempt(db, username, client_ip, user_agent, "INVALID_PASSWORD", user.id)
+            # Increment IP failed attempts for wrong password
+            self.increment_ip_failed_attempts(db, client_ip, username, "INVALID_PASSWORD", user_agent)
             
-            # Set cooldown if max attempts reached
+            # Set user cooldown if max attempts reached
             if user.login_attempts >= MAX_LOGIN_ATTEMPTS:
                 user.cooldown_until = datetime.utcnow() + timedelta(minutes=COOLDOWN_MINUTES)
                 self.log_user_action(db, user.id, None, "ACCOUNT_LOCKED", client_ip, user_agent)
                 
-                # Log security event for brute force
+                # Log security event for user brute force
                 self._log_security_event(db, "BRUTE_FORCE_ATTEMPT", "HIGH", client_ip,
                                        user_agent, username, f"Account locked after {MAX_LOGIN_ATTEMPTS} failed attempts")
             
             db.commit()
             return None
         
-        # Successful authentication
+        # STEP 6: Successful authentication
         print(f"✅ Successful authentication for {username} from {client_ip}")
+        
+        # Reset user login attempts on successful login
+        self.reset_login_attempts(db, user)
+        
+        # Log successful login
+        self.log_user_action(db, user.id, None, "LOGIN_SUCCESS", client_ip, user_agent)
+        
         return user
     
     def log_failed_attempt(self, db: Session, username: str, client_ip: str = None, 
                           user_agent: str = None, failure_reason: str = "UNKNOWN", 
                           user_id: uuid.UUID = None):
-        """REAL implementation - Log failed login attempt to database"""
+        """Log failed login attempt to database"""
         try:
             # Analyze if this is suspicious
             is_suspicious = self._analyze_suspicious_attempt(user_agent, client_ip, failure_reason)
@@ -159,11 +244,6 @@ class AuthManager:
             db.commit()
             
             print(f"❌ Failed login logged: {username} from {client_ip} - Reason: {failure_reason}")
-            print(f"🌐 User Agent: {user_agent}")
-            print(f"🔍 Suspicious: {is_suspicious}")
-            
-            # Check if we need to trigger additional security measures
-            self._check_and_trigger_security_alerts(db, client_ip, username)
             
         except Exception as e:
             print(f"❌ Error logging failed attempt: {e}")
@@ -171,9 +251,9 @@ class AuthManager:
     
     def log_user_action(self, db: Session, user_id: uuid.UUID, product_id: Optional[uuid.UUID], 
                        action: str, client_ip: str = None, user_agent: str = None):
-        """Log user action with enhanced details"""
+        """Log user action"""
         try:
-            log_entry = UserLog(
+            user_log = UserLog(
                 user_id=user_id,
                 product_id=product_id,
                 action=action,
@@ -181,82 +261,52 @@ class AuthManager:
                 user_agent=user_agent
             )
             
-            db.add(log_entry)
+            db.add(user_log)
             db.commit()
             
-            print(f"📝 Action logged: {action} by user {user_id}")
-            print(f"🌐 From: {client_ip} via {user_agent}")
-            
         except Exception as e:
-            print(f"❌ Logging error: {e}")
+            print(f"❌ Error logging user action: {e}")
             db.rollback()
     
-    def _analyze_suspicious_attempt(self, user_agent: str, client_ip: str, failure_reason: str) -> bool:
-        """Analyze if login attempt is suspicious"""
-        if not user_agent:
-            return True
-            
-        # Check for suspicious user agents
-        if any(suspicious in user_agent.lower() for suspicious in SUSPICIOUS_USER_AGENTS):
-            return True
-            
-        # Check for empty or very short user agent
-        if len(user_agent) < 10:
-            return True
-            
-        # Check for repeated failures
-        if failure_reason == "INVALID_USERNAME":
-            return True  # Username guessing
-            
-        return False
-    
     def _is_suspicious_activity(self, db: Session, client_ip: str, user_agent: str) -> bool:
-        """Check for suspicious activity patterns"""
+        """Detect suspicious login patterns"""
         if not client_ip:
             return False
-            
-        # Check failed attempts from this IP in last hour
-        one_hour_ago = datetime.utcnow() - timedelta(hours=1)
         
-        failed_count = db.query(FailedLoginAttempt).filter(
+        last_hour = datetime.utcnow() - timedelta(hours=1)
+        
+        # Check for high frequency attempts from same IP
+        ip_attempts = db.query(FailedLoginAttempt).filter(
             FailedLoginAttempt.ip_address == client_ip,
-            FailedLoginAttempt.attempt_time >= one_hour_ago
+            FailedLoginAttempt.attempt_time >= last_hour
         ).count()
         
-        return failed_count >= MAX_FAILED_ATTEMPTS_PER_IP
+        if ip_attempts >= MAX_FAILED_ATTEMPTS_PER_IP:
+            return True
+        
+        # Check for user agent anomalies
+        if user_agent and len(user_agent) < 10:
+            return True
+        
+        return False
     
-    def _check_and_trigger_security_alerts(self, db: Session, client_ip: str, username: str):
-        """Check if we need to trigger security alerts"""
-        try:
-            # Check for multiple failures from same IP
-            last_hour = datetime.utcnow() - timedelta(hours=1)
-            
-            failed_count = db.query(FailedLoginAttempt).filter(
-                FailedLoginAttempt.ip_address == client_ip,
-                FailedLoginAttempt.attempt_time >= last_hour
-            ).count()
-            
-            if failed_count >= MAX_FAILED_ATTEMPTS_PER_IP:
-                self._log_security_event(
-                    db, "BRUTE_FORCE_IP", "CRITICAL", client_ip, None, username,
-                    f"IP {client_ip} has {failed_count} failed attempts in last hour"
-                )
-                
-            # Check for username enumeration attempts
-            username_attempts = db.query(FailedLoginAttempt).filter(
-                FailedLoginAttempt.username == username.lower(),
-                FailedLoginAttempt.failure_reason == "INVALID_USERNAME",
-                FailedLoginAttempt.attempt_time >= last_hour
-            ).count()
-            
-            if username_attempts >= 3:
-                self._log_security_event(
-                    db, "USERNAME_ENUMERATION", "MEDIUM", client_ip, None, username,
-                    f"Multiple invalid username attempts for {username}"
-                )
-                
-        except Exception as e:
-            print(f"Error checking security alerts: {e}")
+    def _analyze_suspicious_attempt(self, user_agent: str, client_ip: str, failure_reason: str) -> bool:
+        """Analyze if a login attempt is suspicious"""
+        suspicious_indicators = []
+        
+        # Check user agent
+        if not user_agent or len(user_agent) < 10:
+            suspicious_indicators.append("Short/missing user agent")
+        
+        # Check for common bot patterns
+        if user_agent and any(bot in user_agent.lower() for bot in ['bot', 'crawler', 'spider', 'scraper']):
+            suspicious_indicators.append("Bot user agent")
+        
+        # Check failure reason patterns
+        if failure_reason in ["INVALID_USERNAME", "IP_COOLDOWN_BLOCKED"]:
+            suspicious_indicators.append(f"Suspicious failure: {failure_reason}")
+        
+        return len(suspicious_indicators) > 0
     
     def _log_security_event(self, db: Session, event_type: str, severity: str, 
                            ip_address: str, user_agent: str, username: str, details: str):
@@ -302,16 +352,8 @@ class AuthManager:
             username: str = payload.get("sub")
             if username is None:
                 raise credentials_exception
-        except JWTError:
-            # Try simple token format as fallback
-            if token.startswith("token_"):
-                parts = token.split("_")
-                if len(parts) >= 2:
-                    username = parts[1]
-                else:
-                    raise credentials_exception
-            else:
-                raise credentials_exception
+        except jwt.JWTError:
+            raise credentials_exception
         
         user = self.get_user_by_username(db, username)
         if user is None:
@@ -319,35 +361,7 @@ class AuthManager:
         
         return user
     
-    # Additional utility methods
-    def get_failed_attempts_summary(self, db: Session, hours: int = 24) -> dict:
-        """Get summary of failed login attempts"""
-        since = datetime.utcnow() - timedelta(hours=hours)
-        
-        failed_attempts = db.query(FailedLoginAttempt).filter(
-            FailedLoginAttempt.attempt_time >= since
-        ).all()
-        
-        summary = {
-            "total_attempts": len(failed_attempts),
-            "unique_ips": len(set(attempt.ip_address for attempt in failed_attempts if attempt.ip_address)),
-            "unique_usernames": len(set(attempt.username for attempt in failed_attempts)),
-            "suspicious_attempts": len([a for a in failed_attempts if a.is_suspicious]),
-            "by_reason": {},
-            "top_ips": {},
-            "top_usernames": {}
-        }
-        
-        # Group by failure reason
-        for attempt in failed_attempts:
-            reason = attempt.failure_reason or "UNKNOWN"
-            summary["by_reason"][reason] = summary["by_reason"].get(reason, 0) + 1
-            
-            # Count by IP
-            if attempt.ip_address:
-                summary["top_ips"][attempt.ip_address] = summary["top_ips"].get(attempt.ip_address, 0) + 1
-                
-            # Count by username
-            summary["top_usernames"][attempt.username] = summary["top_usernames"].get(attempt.username, 0) + 1
-        
-        return summary
+    # 🆕 NEW: Get IP cooldown status for frontend
+    def get_ip_status(self, db: Session, client_ip: str) -> dict:
+        """Get IP status for frontend to display cooldown info"""
+        return self.check_ip_cooldown(db, client_ip)
