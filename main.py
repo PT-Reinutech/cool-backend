@@ -53,6 +53,8 @@ async def security_headers(request: Request, call_next):
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
+# File: main.py (update login endpoint)
+
 @app.post("/auth/login", response_model=Token)
 async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
@@ -60,16 +62,21 @@ async def login(
     db: Session = Depends(get_db)
 ):
     """
-    Secure login endpoint with rate limiting and security measures
+    Secure login endpoint with comprehensive security logging
     """
     client_ip = request.client.host if request else "unknown"
+    user_agent = request.headers.get("user-agent", "unknown") if request else "unknown"
     
-    # Authenticate user with security checks
-    user = auth_manager.authenticate_user(db, form_data.username, form_data.password, client_ip)
+    print(f"🔐 Login attempt: {form_data.username} from {client_ip}")
+    print(f"🌐 User Agent: {user_agent}")
+    
+    # Authenticate user with comprehensive security checks
+    user = auth_manager.authenticate_user(
+        db, form_data.username, form_data.password, client_ip, user_agent
+    )
     
     if not user:
-        # Log failed attempt
-        auth_manager.log_failed_attempt(db, form_data.username, client_ip)
+        # Failed attempts are now logged in authenticate_user method
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Username atau password salah",
@@ -90,8 +97,10 @@ async def login(
     # Create access token
     access_token = auth_manager.create_access_token(data={"sub": user.username})
     
-    # Log successful login
-    auth_manager.log_user_action(db, user.id, None, "LOGIN_SUCCESS", client_ip)
+    # Log successful login with full details
+    auth_manager.log_user_action(db, user.id, None, "LOGIN_SUCCESS", client_ip, user_agent)
+    
+    print(f"✅ Login successful: {user.username}")
     
     return {
         "access_token": access_token,
@@ -101,6 +110,64 @@ async def login(
             "username": user.username,
             "created_at": user.created_at
         }
+    }
+
+@app.get("/auth/security/failed-attempts")
+async def get_failed_attempts_summary(
+    hours: int = 24,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    """
+    Get summary of failed login attempts (admin only)
+    """
+    # Verify admin user
+    user = auth_manager.get_current_user(db, token)
+    
+    # Get summary
+    summary = auth_manager.get_failed_attempts_summary(db, hours)
+    
+    return {
+        "timeframe_hours": hours,
+        "summary": summary,
+        "generated_at": datetime.utcnow()
+    }
+
+@app.get("/auth/security/events")
+async def get_security_events(
+    limit: int = 50,
+    severity: Optional[str] = None,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
+    """
+    Get recent security events (admin only)
+    """
+    # Verify admin user
+    user = auth_manager.get_current_user(db, token)
+    
+    query = db.query(SecurityEvent).order_by(SecurityEvent.timestamp.desc())
+    
+    if severity:
+        query = query.filter(SecurityEvent.severity == severity.upper())
+    
+    events = query.limit(limit).all()
+    
+    return {
+        "events": [
+            {
+                "id": str(event.id),
+                "event_type": event.event_type,
+                "severity": event.severity,
+                "ip_address": event.ip_address,
+                "username": event.username,
+                "details": event.details,
+                "timestamp": event.timestamp,
+                "resolved": event.resolved
+            }
+            for event in events
+        ],
+        "total_count": len(events)
     }
 
 @app.post("/auth/register", response_model=UserResponse)
@@ -159,10 +226,13 @@ async def logout(
     Logout user and log the action
     """
     client_ip = request.client.host if request else "unknown"
+    # 🔧 FIX: Extract user agent for logout too
+    user_agent = request.headers.get("user-agent", "unknown") if request else "unknown"
+    
     user = auth_manager.get_current_user(db, token)
     
-    # Log logout action
-    auth_manager.log_user_action(db, user.id, None, "LOGOUT", client_ip)
+    # 🔧 FIX: Log logout action WITH user agent
+    auth_manager.log_user_action(db, user.id, None, "LOGOUT", client_ip, user_agent)
     
     return {"message": "Logout berhasil"}
 
