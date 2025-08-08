@@ -1,0 +1,10 @@
+#backend ignore fast API
+.env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+.env
+
+database_setup.sql
