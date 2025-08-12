@@ -352,7 +352,7 @@ class AuthManager:
             username: str = payload.get("sub")
             if username is None:
                 raise credentials_exception
-        except jwt.JWTError:
+        except jwt.PyJWTError:
             raise credentials_exception
         
         user = self.get_user_by_username(db, username)
