@@ -27,6 +27,8 @@ app.add_middleware(
         "http://192.168.100.30:1234",  # Frontend port
         "http://192.168.100.30:8001",  # Backend port
         "http://192.168.100.253:1234",  # Frontend port
+        "http://100.69.240.25:1234",   # Tambahkan ini
+        "http://100.69.240.25:8001"    # Jika backend juga diakses via IP ini
     ],
     allow_credentials=True,
     allow_methods=["*"],
