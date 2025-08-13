@@ -112,9 +112,10 @@ class DeviceService:
                     existing_product.is_deleted = False
                     existing_product.deleted_at = None
                     db.commit()
-                    return True, f"Device {chip_id} berhasil di-restore", existing_product
+                    db.refresh(existing_product)
+                    return True, f"Device {chip_id} berhasil di-restore dan siap digunakan kembali", existing_product
                 else:
-                    return False, f"Device dengan ID {chip_id} sudah terdaftar", existing_product
+                    return False, f"Device dengan ID {chip_id} sudah terdaftar dan aktif", existing_product
             
             # Tentukan product type berdasarkan prefix
             product_type_id = DeviceService.determine_product_type_from_chip_id(chip_id)

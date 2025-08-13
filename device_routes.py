@@ -69,7 +69,7 @@ async def register_device(
         if len(chip_id) < 5:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Device ID terlalu pendek"
+                detail="Device ID terlalu pendek. Format yang benar: F0101 + MAC Address"
             )
         
         logger.info(f"User {current_user.username} attempting to register device: {chip_id}")
@@ -81,21 +81,53 @@ async def register_device(
         
         if success:
             logger.info(f"Device {chip_id} successfully registered by {current_user.username}")
-            
-            # Log user action (assuming user_logs table exists)
-            # You can implement logging here if needed
-            
             return DeviceRegistrationResponse(
                 success=True,
                 message=message,
-                product=None  # We don't need to return full product details
+                product=None
             )
         else:
-            logger.warning(f"Failed to register device {chip_id}: {message}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=message
-            )
+            # Customize error messages untuk user experience yang lebih baik
+            if "sudah terdaftar" in message.lower():
+                logger.info(f"Device {chip_id} already registered - informing user")
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,  # Conflict instead of Bad Request
+                    detail={
+                        "type": "DEVICE_ALREADY_REGISTERED",
+                        "message": f"Device {chip_id} sudah terdaftar di sistem",
+                        "suggestion": "Periksa daftar device di halaman Things, atau gunakan Device ID yang berbeda"
+                    }
+                )
+            elif "tidak dikenal" in message.lower():
+                logger.warning(f"Unknown device prefix for {chip_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "type": "UNKNOWN_DEVICE_PREFIX",
+                        "message": f"Prefix '{chip_id[:5]}' tidak dikenal",
+                        "suggestion": "Pastikan Device ID dimulai dengan F0101 untuk Commercial Freezer"
+                    }
+                )
+            elif "tidak ditemukan" in message.lower():
+                logger.error(f"Product type not found for {chip_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={
+                        "type": "PRODUCT_TYPE_NOT_FOUND",
+                        "message": "Tipe device tidak ditemukan di database",
+                        "suggestion": "Hubungi administrator sistem"
+                    }
+                )
+            else:
+                logger.warning(f"Failed to register device {chip_id}: {message}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "type": "REGISTRATION_FAILED",
+                        "message": message,
+                        "suggestion": "Periksa format Device ID atau hubungi administrator"
+                    }
+                )
     
     except HTTPException:
         raise
@@ -103,7 +135,11 @@ async def register_device(
         logger.error(f"Unexpected error during device registration: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error during device registration"
+            detail={
+                "type": "INTERNAL_ERROR",
+                "message": "Terjadi kesalahan sistem saat mendaftarkan device",
+                "suggestion": "Coba lagi dalam beberapa saat atau hubungi administrator"
+            }
         )
 
 @router.put("/products/{product_id}/name")
