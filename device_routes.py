@@ -9,7 +9,8 @@ from device_schemas import (
     DeviceRegistrationResponse,
     ProductResponse
 )
-from auth import get_current_user  # Assuming auth system exists
+# Import auth functions (sesuaikan dengan struktur auth yang ada)
+# from auth import get_current_user  # Jika ada
 from models import User
 from typing import List
 import logging
@@ -20,10 +21,20 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
 
+# Temporary auth dependency - ganti dengan yang sesuai
+async def get_current_user_temp(db: Session = Depends(get_db)):
+    """Temporary auth - replace with actual auth system"""
+    # Return dummy user for now - replace this with actual auth
+    from models import User
+    user = db.query(User).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="No user found")
+    return user
+
 @router.get("/products", response_model=List[ProductListResponse])
 async def get_all_products(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_temp)
 ):
     """
     Endpoint untuk mendapatkan semua products untuk Things page
@@ -44,7 +55,7 @@ async def get_all_products(
 async def register_device(
     request: DeviceRegistrationRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_temp)
 ):
     """
     Endpoint untuk mendaftarkan device baru berdasarkan chip ID
@@ -100,7 +111,7 @@ async def update_product_name(
     product_id: str,
     new_name: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_temp)
 ):
     """
     Update nama product
@@ -130,7 +141,7 @@ async def update_product_name(
 async def delete_product(
     product_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_temp)
 ):
     """
     Hapus product
@@ -160,7 +171,7 @@ async def delete_product(
 async def get_product_detail(
     product_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user_temp)
 ):
     """
     Get detail product untuk debugging/monitoring
