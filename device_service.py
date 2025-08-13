@@ -1,4 +1,4 @@
-# device_service.py
+# device_service.py - Updated dengan soft delete
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from device_models import Product, ProductType, ProductState
@@ -20,7 +20,7 @@ class DeviceService:
     @staticmethod
     def get_all_products(db: Session) -> List[ProductListResponse]:
         """
-        Mengambil semua products untuk ditampilkan di Things page
+        Mengambil semua products yang tidak dihapus untuk ditampilkan di Things page
         """
         query = db.query(
             Product.id,
@@ -36,6 +36,9 @@ class DeviceService:
             ProductType, Product.product_type_id == ProductType.id
         ).outerjoin(
             ProductState, Product.id == ProductState.product_id
+        ).filter(
+            # Filter hanya yang tidak dihapus
+            Product.is_deleted == False
         ).order_by(Product.created_at.desc())
         
         results = query.all()
@@ -63,9 +66,11 @@ class DeviceService:
     @staticmethod
     def get_product_by_serial(db: Session, serial_number: str) -> Optional[Product]:
         """
-        Cari product berdasarkan serial number
+        Cari product berdasarkan serial number (hanya yang tidak dihapus)
         """
-        return db.query(Product).filter(Product.serial_number == serial_number).first()
+        return db.query(Product).filter(
+            and_(Product.serial_number == serial_number, Product.is_deleted == False)
+        ).first()
     
     @staticmethod
     def determine_product_type_from_chip_id(chip_id: str) -> Optional[str]:
@@ -99,10 +104,17 @@ class DeviceService:
             (success: bool, message: str, product: Optional[Product])
         """
         try:
-            # Cek apakah device sudah terdaftar
-            existing_product = DeviceService.get_product_by_serial(db, chip_id)
+            # Cek apakah device sudah terdaftar (termasuk yang soft deleted)
+            existing_product = db.query(Product).filter(Product.serial_number == chip_id).first()
             if existing_product:
-                return False, f"Device dengan ID {chip_id} sudah terdaftar", existing_product
+                if existing_product.is_deleted:
+                    # Restore product yang sudah di-soft delete
+                    existing_product.is_deleted = False
+                    existing_product.deleted_at = None
+                    db.commit()
+                    return True, f"Device {chip_id} berhasil di-restore", existing_product
+                else:
+                    return False, f"Device dengan ID {chip_id} sudah terdaftar", existing_product
             
             # Tentukan product type berdasarkan prefix
             product_type_id = DeviceService.determine_product_type_from_chip_id(chip_id)
@@ -119,7 +131,8 @@ class DeviceService:
                 product_type_id=uuid.UUID(product_type_id),
                 name=f"Device {chip_id}",
                 installed_at=datetime.utcnow(),
-                created_at=datetime.utcnow()
+                created_at=datetime.utcnow(),
+                is_deleted=False
             )
             
             db.add(new_product)
@@ -149,7 +162,9 @@ class DeviceService:
         Update nama product
         """
         try:
-            product = db.query(Product).filter(Product.id == product_id).first()
+            product = db.query(Product).filter(
+                and_(Product.id == product_id, Product.is_deleted == False)
+            ).first()
             if not product:
                 return False, "Product tidak ditemukan"
             
@@ -165,21 +180,70 @@ class DeviceService:
     @staticmethod
     def delete_product(db: Session, product_id: str) -> Tuple[bool, str]:
         """
-        Hapus product (soft delete atau hard delete)
+        Soft delete product (lebih aman daripada hard delete)
+        """
+        try:
+            product = db.query(Product).filter(
+                and_(Product.id == product_id, Product.is_deleted == False)
+            ).first()
+            if not product:
+                return False, "Product tidak ditemukan"
+            
+            # Soft delete - set flag instead of actual deletion
+            product.is_deleted = True
+            product.deleted_at = datetime.utcnow()
+            db.commit()
+            
+            return True, f"Product {product.name} berhasil dihapus"
+            
+        except Exception as e:
+            db.rollback()
+            return False, f"Error saat menghapus product: {str(e)}"
+    
+    @staticmethod
+    def hard_delete_product(db: Session, product_id: str) -> Tuple[bool, str]:
+        """
+        Hard delete product dengan cascade delete untuk semua referensi
+        Hanya gunakan jika benar-benar diperlukan!
         """
         try:
             product = db.query(Product).filter(Product.id == product_id).first()
             if not product:
                 return False, "Product tidak ditemukan"
             
-            # Hapus product state dulu
+            # Import semua model yang mungkin memiliki foreign key ke products
+            from device_models import ProductState, Alarm
+            
+            # Hapus semua referensi berurutan (cascade delete manual)
+            
+            # 1. Hapus product_state
             db.query(ProductState).filter(ProductState.product_id == product_id).delete()
             
-            # Hapus product
+            # 2. Hapus alarms
+            db.query(Alarm).filter(Alarm.product_id == product_id).delete()
+            
+            # 3. Hapus maintenance records (jika ada)
+            try:
+                from sqlalchemy import text
+                db.execute(text("DELETE FROM maintenance.product_maintenance WHERE product_id = :product_id"), 
+                          {"product_id": product_id})
+            except Exception as e:
+                print(f"Warning: Could not delete maintenance records: {e}")
+            
+            # 4. Hapus dari config tables jika ada
+            try:
+                db.execute(text("DELETE FROM config.product_auto_config WHERE product_id = :product_id"), 
+                          {"product_id": product_id})
+                db.execute(text("DELETE FROM config.product_manual_config WHERE product_id = :product_id"), 
+                          {"product_id": product_id})
+            except Exception as e:
+                print(f"Warning: Could not delete config records: {e}")
+            
+            # 5. Terakhir hapus product
             db.delete(product)
             db.commit()
             
-            return True, f"Product {product.name} berhasil dihapus"
+            return True, f"Product {product.name} dan semua referensinya berhasil dihapus permanen"
             
         except Exception as e:
             db.rollback()

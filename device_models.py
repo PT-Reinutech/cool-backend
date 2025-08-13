@@ -1,4 +1,4 @@
-# device_models.py
+# device_models.py - Updated dengan soft delete support
 from sqlalchemy import Column, String, Integer, DateTime, Boolean, Text, ForeignKey, Float
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
@@ -39,6 +39,10 @@ class Product(Base):
     location_long = Column(Float, nullable=True)
     installed_at = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Soft delete fields
+    is_deleted = Column(Boolean, default=False)
+    deleted_at = Column(DateTime, nullable=True)
     
     # Relationship
     product_type = relationship("ProductType", back_populates="products")
