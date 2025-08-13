@@ -5,6 +5,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from device_routes import router as device_router
+from device_config_routes import router as config_router
 from datetime import datetime, timedelta
 from auth import AuthManager
 from database import get_db
@@ -20,6 +21,7 @@ app = FastAPI(
 )
 
 app.include_router(device_router)
+app.include_router(config_router)
 
 # CORS middleware
 app.add_middleware(
