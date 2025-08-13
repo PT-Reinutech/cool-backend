@@ -1,4 +1,4 @@
-# device_routes.py
+# device_routes.py - Updated dengan InfluxDB validation
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from database import get_db
@@ -9,8 +9,6 @@ from device_schemas import (
     DeviceRegistrationResponse,
     ProductResponse
 )
-# Import auth functions (sesuaikan dengan struktur auth yang ada)
-# from auth import get_current_user  # Jika ada
 from models import User
 from typing import List
 import logging
@@ -24,7 +22,6 @@ router = APIRouter(prefix="/api/devices", tags=["devices"])
 # Temporary auth dependency - ganti dengan yang sesuai
 async def get_current_user_temp(db: Session = Depends(get_db)):
     """Temporary auth - replace with actual auth system"""
-    # Return dummy user for now - replace this with actual auth
     from models import User
     user = db.query(User).first()
     if not user:
@@ -51,9 +48,11 @@ async def get_all_products(
             detail="Error retrieving products"
         )
 
+# 🆕 UPDATED: Add async and InfluxDB validation support
 @router.post("/register", response_model=DeviceRegistrationResponse)
 async def register_device(
     request: DeviceRegistrationRequest,
+    skip_influx: bool = False,  # 🆕 Added query parameter
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_temp)
 ):
@@ -61,6 +60,9 @@ async def register_device(
     Endpoint untuk mendaftarkan device baru berdasarkan chip ID
     Logic: chipid = "F0101" + String(ESP.getEfuseMac())
     Jika prefix "F0101" -> Commercial Freezer
+    
+    Query Parameters:
+    - skip_influx: Set true untuk bypass InfluxDB validation (development only)
     """
     try:
         chip_id = request.device_id.strip()
@@ -72,11 +74,11 @@ async def register_device(
                 detail="Device ID terlalu pendek. Format yang benar: F0101 + MAC Address"
             )
         
-        logger.info(f"User {current_user.username} attempting to register device: {chip_id}")
+        logger.info(f"User {current_user.username} attempting to register device: {chip_id} (skip_influx: {skip_influx})")
         
-        # Proses registrasi device
-        success, message, product = DeviceService.create_product_from_chip_id(
-            db, chip_id, str(current_user.id)
+        # 🆕 UPDATED: Changed to await for async call
+        success, message, product = await DeviceService.create_product_from_chip_id(
+            db, chip_id, str(current_user.id), skip_influx_validation=skip_influx
         )
         
         if success:
@@ -106,6 +108,17 @@ async def register_device(
                         "type": "UNKNOWN_DEVICE_PREFIX",
                         "message": f"Prefix '{chip_id[:5]}' tidak dikenal",
                         "suggestion": "Pastikan Device ID dimulai dengan F0101 untuk Commercial Freezer"
+                    }
+                )
+            # 🆕 TAMBAHAN: InfluxDB validation error handling
+            elif "influxdb validation failed" in message.lower():
+                logger.warning(f"InfluxDB validation failed for {chip_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "type": "INFLUXDB_VALIDATION_FAILED",
+                        "message": message.replace("InfluxDB Validation Failed: ", ""),
+                        "suggestion": "Pastikan device sudah aktif dan mengirim data ke InfluxDB sebelum registrasi"
                     }
                 )
             elif "tidak ditemukan" in message.lower():
@@ -246,3 +259,65 @@ async def get_product_detail(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error retrieving product detail"
         )
+
+# 🆕 TAMBAHAN: Debug endpoints
+@router.get("/debug/products")
+async def debug_products(db: Session = Depends(get_db)):
+    """Debug endpoint untuk check data"""
+    try:
+        from device_models import Product, ProductType, ProductState
+        
+        products = db.query(Product).all()
+        product_states = db.query(ProductState).all()
+        product_types = db.query(ProductType).all()
+        
+        return {
+            "total_products": len(products),
+            "total_states": len(product_states),
+            "total_types": len(product_types),
+            "products": [{"id": str(p.id), "serial": p.serial_number, "name": p.name} for p in products[:5]],
+            "states": [{"id": str(s.id), "product_id": str(s.product_id), "mode": s.current_mode} for s in product_states[:5]]
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@router.get("/debug/influx/{device_id}")
+async def test_influx_device(device_id: str):
+    """Test InfluxDB connectivity dan device validation"""
+    try:
+        from influxdb_service import InfluxDBService
+        from datetime import datetime
+        
+        influx_service = InfluxDBService()
+        
+        # Test basic connectivity
+        exists, metadata = await influx_service.check_device_exists(device_id, time_window_minutes=60)
+        
+        # Test validation
+        is_valid, validation_message, validation_metadata = await influx_service.validate_device_for_registration(device_id)
+        
+        # Test last activity
+        last_activity = await influx_service.get_device_last_activity(device_id)
+        
+        return {
+            "device_id": device_id,
+            "influx_connectivity": "OK",
+            "exists_in_influx": exists,
+            "metadata": metadata,
+            "validation_result": {
+                "is_valid": is_valid,
+                "message": validation_message,
+                "metadata": validation_metadata
+            },
+            "last_activity": last_activity.isoformat() if last_activity else None,
+            "test_timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"InfluxDB test error: {str(e)}")
+        return {
+            "device_id": device_id,
+            "error": str(e),
+            "influx_connectivity": "FAILED",
+            "test_timestamp": datetime.utcnow().isoformat()
+        }

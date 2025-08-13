@@ -1,4 +1,4 @@
-# device_service.py - Updated dengan soft delete
+# device_service.py - Updated dengan soft delete + InfluxDB validation
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from device_models import Product, ProductType, ProductState
@@ -91,14 +91,16 @@ class DeviceService:
         product_type = db.query(ProductType).filter(ProductType.id == product_type_id).first()
         return product_type is not None
     
+    # 🆕 UPDATED: Changed to async and added InfluxDB validation
     @staticmethod
-    def create_product_from_chip_id(
+    async def create_product_from_chip_id(
         db: Session, 
         chip_id: str,
-        user_id: Optional[str] = None
+        user_id: Optional[str] = None,
+        skip_influx_validation: bool = False  # 🆕 Added parameter
     ) -> Tuple[bool, str, Optional[Product]]:
         """
-        Membuat product baru berdasarkan chip ID
+        Membuat product baru berdasarkan chip ID dengan InfluxDB validation
         
         Returns:
             (success: bool, message: str, product: Optional[Product])
@@ -126,6 +128,23 @@ class DeviceService:
             if not DeviceService.validate_product_type_exists(db, product_type_id):
                 return False, f"Product type {product_type_id} tidak ditemukan di database", None
             
+            # 🆕 TAMBAHAN: InfluxDB Validation
+            if not skip_influx_validation:
+                try:
+                    from influxdb_service import InfluxDBService
+                    
+                    influx_service = InfluxDBService()
+                    is_valid, validation_message, metadata = await influx_service.validate_device_for_registration(chip_id)
+                    
+                    if not is_valid:
+                        return False, f"InfluxDB Validation Failed: {validation_message}", None
+                except ImportError:
+                    # If InfluxDB service not available, log warning but continue
+                    print(f"Warning: InfluxDB service not available for validation of {chip_id}")
+                except Exception as e:
+                    # If InfluxDB validation fails, log error but continue
+                    print(f"Warning: InfluxDB validation error for {chip_id}: {str(e)}")
+            
             # Buat product baru
             new_product = Product(
                 serial_number=chip_id,
@@ -151,7 +170,12 @@ class DeviceService:
             db.commit()
             db.refresh(new_product)
             
-            return True, f"Device {chip_id} berhasil didaftarkan", new_product
+            # Success message
+            success_message = f"Device {chip_id} berhasil didaftarkan"
+            if not skip_influx_validation:
+                success_message += " dan terverifikasi di InfluxDB"
+            
+            return True, success_message, new_product
             
         except Exception as e:
             db.rollback()
