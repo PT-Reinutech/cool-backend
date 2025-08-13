@@ -147,12 +147,26 @@ async def delete_product(
     Hapus product
     """
     try:
+        logger.info(f"Attempting to delete product: {product_id}")
+        
+        # Validate UUID format
+        try:
+            import uuid as uuid_lib
+            uuid_lib.UUID(product_id)
+        except ValueError:
+            logger.error(f"Invalid UUID format: {product_id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid product ID format: {product_id}"
+            )
+        
         success, message = DeviceService.delete_product(db, product_id)
         
         if success:
             logger.info(f"User {current_user.username} deleted product {product_id}")
             return {"success": True, "message": message}
         else:
+            logger.warning(f"Failed to delete product {product_id}: {message}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=message
@@ -161,10 +175,10 @@ async def delete_product(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error deleting product: {str(e)}")
+        logger.error(f"Unexpected error deleting product {product_id}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error deleting product"
+            detail=f"Error deleting product: {str(e)}"
         )
 
 @router.get("/products/{product_id}", response_model=ProductResponse)
