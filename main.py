@@ -24,21 +24,18 @@ app = FastAPI(
 app.include_router(device_router)
 app.include_router(config_router)
 
-# CORS middleware
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000", 
-        "http://localhost:1234", 
-        "http://192.168.100.30:1234",  # Frontend port
-        "http://192.168.100.30:8001",  # Backend port
-        "http://192.168.100.253:1234",  # Frontend port
-        "http://100.69.240.25:1234",   # Tambahkan ini
-        "http://100.69.240.25:8001"    # Jika backend juga diakses via IP ini
+        "https://ecooling.reinutechiot.com",  # Your frontend domain
+        "http://localhost:3000",  # For local development
+        "http://localhost:1234",  # Your local frontend port
     ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=True,  # Important for auth cookies/tokens
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],  # Or be specific: ["Authorization", "Content-Type"]
+    expose_headers=["*"],  # If you need to expose custom headers
 )
 
 app.add_middleware(
