@@ -3,6 +3,7 @@
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy.orm import Session
 from device_routes import router as device_router
 from device_config_routes import router as config_router
@@ -38,6 +39,11 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["ecooling.reinutechiot.com", "localhost", "*.reinutechiot.com"]
 )
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
