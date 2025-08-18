@@ -21,8 +21,6 @@ app = FastAPI(
     version="1.0.0"
 )
 
-app.include_router(device_router)
-app.include_router(config_router)
 
 # Configure CORS
 app.add_middleware(
@@ -42,6 +40,9 @@ app.add_middleware(
     TrustedHostMiddleware,
     allowed_hosts=["ecooling.reinutechiot.com", "localhost", "*.reinutechiot.com"]
 )
+
+app.include_router(device_router)
+app.include_router(config_router)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 auth_manager = AuthManager()
