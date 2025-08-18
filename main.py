@@ -48,16 +48,11 @@ ALLOWED_ORIGINS = [
 # ========================================
 @app.middleware("http")
 async def custom_cors_middleware(request: Request, call_next):
-    """
-    Custom CORS middleware that reliably adds headers to ALL responses
-    """
     origin = request.headers.get("origin")
     method = request.method
     
-    # Debug logging
     logger.info(f"📨 {method} {request.url.path}")
     logger.info(f"📍 Origin: {origin}")
-    logger.info(f"🔑 Headers: Authorization={request.headers.get('authorization', 'None')}")
     
     # Handle preflight OPTIONS requests
     if method == "OPTIONS":
@@ -66,41 +61,25 @@ async def custom_cors_middleware(request: Request, call_next):
             status_code=200,
             headers={
                 "Access-Control-Allow-Origin": origin if origin in ALLOWED_ORIGINS else "",
-                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-                "Access-Control-Allow-Headers": "Authorization, Content-Type, Accept, Origin, User-Agent, X-Client-App, X-Client-Version",
+                "Access-Control-Allow-Methods": "*",  # Allow ALL methods
+                "Access-Control-Allow-Headers": "*",  # Allow ALL headers
                 "Access-Control-Allow-Credentials": "true",
                 "Access-Control-Max-Age": "86400",
-                "Content-Type": "text/plain",
             }
         )
         logger.info(f"✅ OPTIONS response with CORS headers")
         return response
     
-    # Process the actual request
-    try:
-        response = await call_next(request)
-    except Exception as e:
-        logger.error(f"❌ Error processing request: {e}")
-        response = JSONResponse(
-            status_code=500,
-            content={"detail": "Internal server error"}
-        )
+    # Process request
+    response = await call_next(request)
     
-    # Add CORS headers to ALL responses (GET, POST, PUT, DELETE, etc.)
+    # Add CORS headers to response
     if origin in ALLOWED_ORIGINS:
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-        response.headers["Access-Control-Expose-Headers"] = "Content-Length, Content-Type"
-        
-        # Log that we added CORS headers
-        logger.info(f"✅ Added CORS headers for origin: {origin}")
-    else:
-        logger.warning(f"⚠️ Origin not allowed: {origin}")
-    
-    # Log response status
-    logger.info(f"📤 Response: {response.status_code} for {request.url.path}")
-    logger.info(f"📋 Response headers: {dict(response.headers)}")
+        response.headers["Access-Control-Allow-Methods"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Expose-Headers"] = "*"
     
     return response
 
