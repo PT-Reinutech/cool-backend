@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from auth import AuthManager
 from database import get_db
 from models import User
+from schemas import Token, UserResponse, UserCreate, IPStatusResponse
 from pydantic import BaseModel
 from typing import Optional
 import uuid
@@ -43,29 +44,6 @@ app.add_middleware(
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 auth_manager = AuthManager()
-
-# Pydantic models
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-    user: dict
-
-class UserResponse(BaseModel):
-    id: uuid.UUID
-    username: str
-    created_at: datetime
-
-class UserCreate(BaseModel):
-    username: str
-    password: str
-
-# 🆕 NEW: IP Status Response Model
-class IPStatusResponse(BaseModel):
-    is_blocked: bool
-    remaining_time: int
-    failed_attempts: int
-    cooldown_until: Optional[datetime]
-    message: str
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
@@ -138,19 +116,24 @@ async def login(
                 detail="Username atau password salah"
             )
         
+        print(f"✅ Successful authentication for {user.username} from {client_ip}")
+        
         # Generate JWT token
         access_token = auth_manager.create_access_token(data={"sub": user.username})
         
-        # Return token with user details including account_type
+        # ✅ FIX: Create UserResponse properly with all required fields
+        user_response = UserResponse(
+            id=user.id,
+            username=user.username,
+            account_type=user.account_type,  # Include account_type field
+            created_at=user.created_at
+        )
+        
+        # ✅ FIX: Return Token with proper UserResponse object
         return Token(
             access_token=access_token,
             token_type="bearer",
-            user=UserResponse(
-                id=user.id,
-                username=user.username,
-                account_type=user.account_type,  # Include account_type
-                created_at=user.created_at
-            )
+            user=user_response  # Now this is UserResponse, not dict
         )
         
     except HTTPException:
@@ -185,9 +168,11 @@ async def register(
     # Log user creation
     auth_manager.log_user_action(db, new_user.id, None, "USER_CREATED", client_ip)
     
+    # ✅ FIX: Return UserResponse with account_type
     return UserResponse(
         id=new_user.id,
         username=new_user.username,
+        account_type=new_user.account_type,  # Include account_type
         created_at=new_user.created_at
     )
 
@@ -205,15 +190,21 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         username: str = payload.get("sub")
         if username is None:
             raise credentials_exception
-    except:
+            
+        user = auth_manager.get_user_by_username(db, username)
+        if user is None:
+            raise credentials_exception
+            
+        # ✅ FIX: Return UserResponse with account_type
+        return UserResponse(
+            id=user.id,
+            username=user.username,
+            account_type=user.account_type,  # Include account_type
+            created_at=user.created_at
+        )
+    except Exception:
         raise credentials_exception
     
-    user = auth_manager.get_user_by_username(db, username)
-    if user is None:
-        raise credentials_exception
-    
-    return user
-
 @app.post("/auth/logout")
 async def logout(
     token: str = Depends(oauth2_scheme),
@@ -259,6 +250,15 @@ async def health_check():
         "timestamp": datetime.utcnow(),
         "security": "enhanced_ip_cooldown_active"
     }
+
+@app.post("/token", response_model=Token)
+async def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    request: Request = None,
+    db: Session = Depends(get_db)
+):
+    """OAuth2 compatible token endpoint"""
+    return await login(form_data, request, db)
 
 if __name__ == "__main__":
     import uvicorn

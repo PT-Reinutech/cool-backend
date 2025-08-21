@@ -1,4 +1,4 @@
-# schemas.py - Updated with account_type
+# schemas.py - Updated with account_type and IPStatusResponse
 from pydantic import BaseModel, validator
 from datetime import datetime
 from typing import Optional, Literal
@@ -43,3 +43,11 @@ class Token(BaseModel):
     access_token: str
     token_type: str
     user: UserResponse  # Updated to include account_type
+
+# ✅ NEW: IP Status Response Model - ADDED TO SCHEMAS.PY
+class IPStatusResponse(BaseModel):
+    is_blocked: bool
+    remaining_time: int
+    failed_attempts: int
+    cooldown_until: Optional[datetime]
+    message: str
