@@ -53,7 +53,6 @@ class InfluxConfigService:
         Format: chipid=device_id, _measurement=config_data, _field=f01/f02/etc, _value=parameter_value
         """
         try:
-            from influxdb_service import InfluxDBService
             from influx_config import InfluxConfig
             import httpx
             
@@ -108,7 +107,6 @@ class InfluxConfigService:
         Load latest configuration parameters from InfluxDB
         """
         try:
-            from influxdb_service import InfluxDBService
             from influx_config import InfluxConfig
             import httpx
             
@@ -267,9 +265,13 @@ async def load_device_config(
                 timestamp=datetime.utcnow().isoformat()
             )
         else:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No configuration found for device {device_id}"
+            # FIXED: Return success=True but empty parameters instead of 404
+            logger.info(f"No configuration found for device {device_id}, returning defaults")
+            return ConfigLoadResponse(
+                success=True,
+                device_id=device_id,
+                parameters={},  # Empty dict untuk indicate no config found
+                timestamp=None
             )
             
     except HTTPException:
@@ -280,6 +282,34 @@ async def load_device_config(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error loading configuration: {str(e)}"
         )
+
+# Health check endpoint untuk config service
+@router.get("/health")
+async def config_health_check():
+    """Health check endpoint for configuration service"""
+    try:
+        from influx_config import InfluxConfig
+        config = InfluxConfig()
+        
+        # Validate configuration
+        issues = config.validate_config()
+        
+        return {
+            "status": "healthy" if not issues else "warning",
+            "service": "device-configuration",
+            "influx_enabled": config.is_enabled(),
+            "config_issues": issues,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return {
+            "status": "unhealthy",
+            "service": "device-configuration",
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
 
 # Debug endpoint
 @router.get("/debug/{device_id}")

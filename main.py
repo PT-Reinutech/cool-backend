@@ -105,6 +105,7 @@ async def login(
     print(f"🔐 Login attempt: {form_data.username} from {client_ip}")
     
     try:
+        
         # Authenticate user
         user = auth_manager.authenticate_user(
             db, form_data.username, form_data.password, client_ip, user_agent
