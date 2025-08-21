@@ -119,79 +119,47 @@ async def login(
     db: Session = Depends(get_db)
 ):
     """
-    Secure login endpoint with IP-based cooldown protection
+    Secure login endpoint with account type checking
     """
     client_ip = request.client.host if request else "unknown"
     user_agent = request.headers.get("user-agent", "unknown") if request else "unknown"
     
     print(f"🔐 Login attempt: {form_data.username} from {client_ip}")
-    print(f"🌐 User Agent: {user_agent}")
     
     try:
-        # Authenticate user (this will handle IP cooldown internally)
+        # Authenticate user
         user = auth_manager.authenticate_user(
             db, form_data.username, form_data.password, client_ip, user_agent
         )
         
         if not user:
-            # Check IP status to provide specific error message
-            ip_status = auth_manager.get_ip_status(db, client_ip)
-            
-            if ip_status['is_blocked']:
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail=f"IP address dalam cooldown. Tunggu {ip_status['remaining_time']} detik.",
-                    headers={"Retry-After": str(ip_status['remaining_time'])}
-                )
-            else:
-                # Regular authentication failure
-                attempts_left = 3 - ip_status['failed_attempts']
-                if attempts_left <= 0:
-                    detail = "Terlalu banyak percobaan login gagal"
-                else:
-                    detail = f"Username atau password salah. {attempts_left} percobaan tersisa."
-                
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=detail,
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-        
-        # Check if user is in user-level cooldown
-        if user.cooldown_until and user.cooldown_until > datetime.utcnow():
-            remaining_time = int((user.cooldown_until - datetime.utcnow()).total_seconds())
             raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Akun terkunci. Tunggu {remaining_time} detik.",
-                headers={"Retry-After": str(remaining_time)}
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Username atau password salah"
             )
         
-        # Successful authentication - create token
-        access_token_expires = timedelta(minutes=30)
-        access_token = auth_manager.create_access_token(
-            data={"sub": user.username}, expires_delta=access_token_expires
-        )
+        # Generate JWT token
+        access_token = auth_manager.create_access_token(data={"sub": user.username})
         
-        print(f"✅ Login successful for {user.username} from {client_ip}")
-        
+        # Return token with user details including account_type
         return Token(
             access_token=access_token,
             token_type="bearer",
-            user={
-                "id": str(user.id),
-                "username": user.username,
-                "created_at": user.created_at.isoformat()
-            }
+            user=UserResponse(
+                id=user.id,
+                username=user.username,
+                account_type=user.account_type,  # Include account_type
+                created_at=user.created_at
+            )
         )
         
-    except HTTPException as e:
-        # Re-raise HTTP exceptions (like cooldown errors)
-        raise e
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"❌ Login error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Server error during authentication"
+            detail="Terjadi kesalahan internal server"
         )
 
 @app.post("/auth/register", response_model=UserResponse)

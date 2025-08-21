@@ -1,13 +1,14 @@
-#schemas.py
+# schemas.py - Updated with account_type
 from pydantic import BaseModel, validator
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Literal
 import uuid
 import re
 
 class UserCreate(BaseModel):
     username: str
     password: str
+    account_type: Literal['admin', 'teknisi', 'client'] = 'admin'  # NEW FIELD
     
     @validator('username')
     def validate_username(cls, v):
@@ -32,6 +33,7 @@ class UserCreate(BaseModel):
 class UserResponse(BaseModel):
     id: uuid.UUID
     username: str
+    account_type: str  # NEW FIELD
     created_at: datetime
     
     class Config:
@@ -40,4 +42,4 @@ class UserResponse(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str
-    user: UserResponse
+    user: UserResponse  # Updated to include account_type

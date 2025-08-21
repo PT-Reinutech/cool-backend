@@ -15,6 +15,7 @@ class User(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     username = Column(Text, unique=True, nullable=False, index=True)
     password_hash = Column(Text, nullable=False)
+    account_type = Column(String(20), nullable=False, default='admin')  # NEW FIELD
     login_attempts = Column(Integer, default=0)
     cooldown_until = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -22,6 +23,15 @@ class User(Base):
     
     # Relationship
     user_logs = relationship("UserLog", back_populates="user")
+    
+    def is_admin(self) -> bool:
+        return self.account_type == 'admin'
+    
+    def is_teknisi(self) -> bool:
+        return self.account_type == 'teknisi'
+    
+    def is_client(self) -> bool:
+        return self.account_type == 'client'
 
 class UserLog(Base):
     __tablename__ = "user_logs"
@@ -29,7 +39,7 @@ class UserLog(Base):
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("auth.users.id"), nullable=False)
-    product_id = Column(UUID(as_uuid=True), nullable=True)  # Can be null for non-device actions
+    product_id = Column(UUID(as_uuid=True), nullable=True)
     action = Column(Text, nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow)
     
