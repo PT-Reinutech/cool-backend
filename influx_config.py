@@ -1,38 +1,33 @@
-# influx_config.py - InfluxDB Configuration
+# influx_config.py - Buat file ini di root directory backend (same level dengan main.py)
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
 class InfluxConfig:
-    """
-    Configuration class untuk InfluxDB settings
-    """
+    """Configuration class untuk InfluxDB settings"""
     
     # InfluxDB Connection Settings
     HOST = os.getenv("INFLUX_HOST", "https://influx.reinutechiot.com")
     ORG = os.getenv("INFLUX_ORG", "")
-    BUCKET = os.getenv("INFLUX_BUCKET", "")  # Updated bucket name
+    BUCKET = os.getenv("INFLUX_BUCKET", "coolingmonitoring")
     TOKEN = os.getenv("INFLUX_TOKEN", "")
     
     # Data Structure Settings
-    DEVICE_ID_TAG = os.getenv("INFLUX_DEVICE_ID_TAG", "chipid")  # Tag name untuk device ID
+    DEVICE_ID_TAG = os.getenv("INFLUX_DEVICE_ID_TAG", "chipid")
     
-    # Validation Settings
-    DEFAULT_TIME_WINDOW_MINUTES = int(os.getenv("INFLUX_DEFAULT_TIME_WINDOW", "60"))
-    EXTENDED_TIME_WINDOW_MINUTES = int(os.getenv("INFLUX_EXTENDED_TIME_WINDOW", "1440"))  # 24 hours
+    # Timeout Settings
     REQUEST_TIMEOUT_SECONDS = float(os.getenv("INFLUX_TIMEOUT", "10.0"))
     
     # Feature Flags
     ENABLE_INFLUX_VALIDATION = os.getenv("ENABLE_INFLUX_VALIDATION", "true").lower() == "true"
-    STRICT_VALIDATION = os.getenv("INFLUX_STRICT_VALIDATION", "true").lower() == "true"
     
     @classmethod
     def get_headers(cls):
         """Get HTTP headers untuk InfluxDB requests"""
         return {
             "Authorization": cls.TOKEN,
-            "Content-Type": "application/json",
+            "Content-Type": "application/vnd.flux",
             "Accept": "application/csv"
         }
     
