@@ -1,4 +1,5 @@
-# device_config_routes.py - FIXED VERSION
+# device_config_routes.py - FIXED SSL VERSION
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from database import get_db
@@ -8,6 +9,7 @@ from typing import Dict, Optional
 from datetime import datetime
 import logging
 import httpx
+import ssl
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -41,16 +43,27 @@ class ConfigLoadResponse(BaseModel):
     parameters: Dict[str, float]
     timestamp: Optional[str] = None
 
-# FIXED: Enhanced InfluxDB Configuration Service
+# FIXED: SSL-aware InfluxDB Configuration Service
 class InfluxConfigService:
     """
-    Enhanced service untuk save/load device configuration ke InfluxDB
+    SSL-aware service untuk save/load device configuration ke InfluxDB
     """
+    
+    @staticmethod
+    def _create_ssl_context():
+        """
+        Create SSL context that handles self-signed certificates
+        """
+        # Create SSL context that doesn't verify certificates (for self-signed certs)
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        return ssl_context
     
     @staticmethod
     async def save_config_to_influx(device_id: str, parameters: Dict[str, float]) -> bool:
         """
-        Save configuration parameters to InfluxDB with enhanced error handling
+        Save configuration parameters to InfluxDB with SSL handling
         """
         try:
             from influx_config import InfluxConfig
@@ -72,7 +85,7 @@ class InfluxConfigService:
             timestamp = datetime.utcnow()
             timestamp_ns = int(timestamp.timestamp() * 1000000000)
             
-            # FIXED: Create proper line protocol entries
+            # Create line protocol entries
             line_protocol_entries = []
             for param_code, param_value in parameters.items():
                 # Validate parameter code
@@ -81,8 +94,7 @@ class InfluxConfigService:
                     logger.warning(f"Skipping invalid parameter: {param_code}")
                     continue
                 
-                # FIXED: Proper line protocol format with escaping
-                # Format: measurement,tag_key=tag_value field_key=field_value timestamp
+                # Proper line protocol format
                 line_entry = f"config_data,{config.DEVICE_ID_TAG}={device_id} {param_code_clean}={param_value} {timestamp_ns}"
                 line_protocol_entries.append(line_entry)
             
@@ -95,11 +107,12 @@ class InfluxConfigService:
             logger.info(f"Saving config to InfluxDB for device {device_id}: {len(line_protocol_entries)} parameters")
             logger.debug(f"Line protocol data: {line_protocol}")
             
-            # FIXED: Enhanced HTTP client with proper error handling
+            # FIXED: Create HTTP client with SSL handling
+            ssl_context = InfluxConfigService._create_ssl_context()
             timeout = httpx.Timeout(config.REQUEST_TIMEOUT_SECONDS, connect=5.0)
             
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                # FIXED: Proper headers and authorization
+            async with httpx.AsyncClient(timeout=timeout, verify=ssl_context) as client:
+                # Headers and parameters
                 headers = {
                     "Authorization": config.TOKEN,
                     "Content-Type": "text/plain; charset=utf-8",
@@ -122,7 +135,7 @@ class InfluxConfigService:
                     content=line_protocol.encode('utf-8')
                 )
                 
-                # FIXED: Enhanced response handling
+                # Enhanced response handling
                 if response.status_code == 204:
                     logger.info(f"✅ Successfully saved configuration to InfluxDB for device {device_id}")
                     return True
@@ -160,25 +173,25 @@ class InfluxConfigService:
     @staticmethod
     async def load_config_from_influx(device_id: str) -> Optional[Dict[str, float]]:
         """
-        Load latest configuration parameters from InfluxDB with enhanced error handling
+        Load latest configuration parameters from InfluxDB with SSL handling
         """
         try:
             from influx_config import InfluxConfig
             
             config = InfluxConfig()
             
-            # FIXED: Check if InfluxDB is enabled
+            # Check if InfluxDB is enabled
             if not config.is_enabled():
                 logger.warning("InfluxDB validation is disabled, returning empty config")
                 return {}
             
-            # FIXED: Validate configuration
+            # Validate configuration
             config_issues = config.validate_config()
             if config_issues:
                 logger.error(f"InfluxDB config issues: {config_issues}")
                 return {}
             
-            # FIXED: Enhanced Flux query with better error handling
+            # Enhanced Flux query
             flux_query = f'''
 from(bucket: "{config.BUCKET}")
   |> range(start: -30d)
@@ -193,9 +206,11 @@ from(bucket: "{config.BUCKET}")
             logger.info(f"Loading config from InfluxDB for device {device_id}")
             logger.debug(f"Flux query: {flux_query}")
             
+            # FIXED: Create HTTP client with SSL handling
+            ssl_context = InfluxConfigService._create_ssl_context()
             timeout = httpx.Timeout(config.REQUEST_TIMEOUT_SECONDS, connect=5.0)
             
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with httpx.AsyncClient(timeout=timeout, verify=ssl_context) as client:
                 headers = config.get_headers()
                 params = {"org": config.ORG}
                 
@@ -210,7 +225,7 @@ from(bucket: "{config.BUCKET}")
                     result_data = response.text
                     logger.debug(f"InfluxDB response: {result_data[:500]}...")  # First 500 chars
                     
-                    # FIXED: Enhanced CSV parsing
+                    # Enhanced CSV parsing
                     parameters = {}
                     
                     if result_data and result_data.strip():
@@ -278,7 +293,7 @@ async def save_device_config(
         logger.info(f"User {current_user.username} saving config for device {device_id}")
         logger.debug(f"Parameters to save: {parameters}")
         
-        # FIXED: Enhanced parameter validation
+        # Enhanced parameter validation
         valid_params = {}
         for param_code, param_value in parameters.items():
             param_code_clean = param_code.lower().strip()
@@ -301,7 +316,7 @@ async def save_device_config(
         
         logger.info(f"Validated {len(valid_params)} parameters: {list(valid_params.keys())}")
         
-        # FIXED: Save to InfluxDB with proper error handling
+        # Save to InfluxDB with proper error handling
         try:
             success = await InfluxConfigService.save_config_to_influx(device_id, valid_params)
             
@@ -375,10 +390,10 @@ async def load_device_config(
             detail=f"Error loading configuration: {str(e)}"
         )
 
-# FIXED: Enhanced health check endpoint
+# Enhanced health check endpoint with SSL testing
 @router.get("/health")
 async def config_health_check():
-    """Health check endpoint for configuration service"""
+    """Health check endpoint for configuration service with SSL testing"""
     try:
         from influx_config import InfluxConfig
         config = InfluxConfig()
@@ -389,11 +404,15 @@ async def config_health_check():
         # Test InfluxDB connectivity if enabled
         connectivity_status = "disabled"
         influx_error = None
+        ssl_status = "unknown"
         
         if config.is_enabled():
             try:
+                # Test with SSL context
+                ssl_context = InfluxConfigService._create_ssl_context()
                 timeout = httpx.Timeout(5.0, connect=2.0)
-                async with httpx.AsyncClient(timeout=timeout) as client:
+                
+                async with httpx.AsyncClient(timeout=timeout, verify=ssl_context) as client:
                     response = await client.get(
                         f"{config.HOST}/api/v2/health",
                         headers={"Authorization": config.TOKEN}
@@ -401,18 +420,22 @@ async def config_health_check():
                     
                     if response.status_code == 200:
                         connectivity_status = "healthy"
+                        ssl_status = "bypassed"
                     else:
                         connectivity_status = f"unhealthy (HTTP {response.status_code})"
+                        ssl_status = "bypassed"
                         
             except Exception as e:
                 connectivity_status = "error"
                 influx_error = str(e)
+                ssl_status = "error"
         
         health_status = {
             "status": "healthy" if not issues and connectivity_status in ["healthy", "disabled"] else "warning",
             "service": "device-configuration",
             "influx_enabled": config.is_enabled(),
             "influx_connectivity": connectivity_status,
+            "ssl_status": ssl_status,
             "config_issues": issues,
             "timestamp": datetime.utcnow().isoformat()
         }
@@ -431,10 +454,10 @@ async def config_health_check():
             "timestamp": datetime.utcnow().isoformat()
         }
 
-# FIXED: Enhanced debug endpoint
+# Debug endpoint with SSL testing
 @router.get("/debug/{device_id}")
 async def debug_device_config(device_id: str):
-    """Debug endpoint untuk check device configuration di InfluxDB"""
+    """Debug endpoint untuk check device configuration di InfluxDB with SSL info"""
     try:
         from influx_config import InfluxConfig
         config = InfluxConfig()
@@ -456,6 +479,10 @@ async def debug_device_config(device_id: str):
                 "timestamp": datetime.utcnow().isoformat()
             }
         
+        # Test SSL connection
+        ssl_context = InfluxConfigService._create_ssl_context()
+        timeout = httpx.Timeout(10.0, connect=5.0)
+        
         # Query config data for device
         flux_query = f'''
 from(bucket: "{config.BUCKET}")
@@ -466,8 +493,7 @@ from(bucket: "{config.BUCKET}")
   |> limit(n: 50)
 '''
         
-        timeout = httpx.Timeout(10.0, connect=5.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, verify=ssl_context) as client:
             response = await client.post(
                 f"{config.HOST}/api/v2/query",
                 headers=config.get_headers(),
@@ -481,6 +507,7 @@ from(bucket: "{config.BUCKET}")
                 "query_success": response.status_code == 200,
                 "raw_response": response.text[:1000] if response.text else "",
                 "response_length": len(response.text) if response.text else 0,
+                "ssl_handling": "disabled_verification",
                 "config_bucket": config.BUCKET,
                 "config_org": config.ORG,
                 "config_host": config.HOST,
@@ -493,5 +520,6 @@ from(bucket: "{config.BUCKET}")
             "device_id": device_id,
             "status": "error",
             "error": str(e),
+            "ssl_handling": "error",
             "timestamp": datetime.utcnow().isoformat()
         }
