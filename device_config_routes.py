@@ -1,4 +1,4 @@
-# device_config_routes.py - FIXED SSL VERSION
+# device_config_routes.py - WIB TIMEZONE VERSION
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -6,7 +6,7 @@ from database import get_db
 from models import User
 from pydantic import BaseModel
 from typing import Dict, Optional
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import logging
 import httpx
 import ssl
@@ -16,6 +16,44 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/devices/config", tags=["device-config"])
+
+# WIB Timezone Configuration
+WIB_TIMEZONE = timezone(timedelta(hours=7))  # UTC+7 for WIB
+
+def get_current_timestamp():
+    """
+    Get current timestamp in WIB timezone
+    Returns datetime object with WIB timezone
+    """
+    return datetime.now(WIB_TIMEZONE)
+
+def get_current_timestamp_iso():
+    """
+    Get current timestamp in WIB timezone as ISO string
+    """
+    return get_current_timestamp().isoformat()
+
+def get_current_timestamp_ns():
+    """
+    Get current timestamp in nanoseconds for InfluxDB (but in WIB)
+    Note: InfluxDB stores in UTC internally, but we're providing WIB time
+    """
+    wib_time = get_current_timestamp()
+    # Convert to nanoseconds since epoch
+    return int(wib_time.timestamp() * 1000000000)
+
+def get_system_timezone_timestamp():
+    """
+    Alternative: Get timestamp using system timezone (Ubuntu default)
+    This will use whatever timezone is configured in Ubuntu system
+    """
+    return datetime.now()
+
+def get_system_timezone_timestamp_iso():
+    """
+    Get system timezone timestamp as ISO string
+    """
+    return get_system_timezone_timestamp().isoformat()
 
 # Temporary auth dependency
 async def get_current_user_temp(db: Session = Depends(get_db)):
@@ -43,10 +81,11 @@ class ConfigLoadResponse(BaseModel):
     parameters: Dict[str, float]
     timestamp: Optional[str] = None
 
-# FIXED: SSL-aware InfluxDB Configuration Service
+# FIXED: SSL-aware InfluxDB Configuration Service with WIB timezone
 class InfluxConfigService:
     """
     SSL-aware service untuk save/load device configuration ke InfluxDB
+    Using WIB timezone for all timestamps
     """
     
     @staticmethod
@@ -64,6 +103,7 @@ class InfluxConfigService:
     async def save_config_to_influx(device_id: str, parameters: Dict[str, float]) -> bool:
         """
         Save configuration parameters to InfluxDB with SSL handling
+        Using WIB timezone for timestamps
         """
         try:
             from influx_config import InfluxConfig
@@ -81,9 +121,11 @@ class InfluxConfigService:
                 logger.warning("InfluxDB validation is disabled, skipping save")
                 return True  # Return success if disabled
             
-            # Prepare timestamp
-            timestamp = datetime.utcnow()
-            timestamp_ns = int(timestamp.timestamp() * 1000000000)
+            # UPDATED: Prepare timestamp in WIB
+            wib_timestamp = get_current_timestamp()
+            timestamp_ns = get_current_timestamp_ns()
+            
+            logger.info(f"Using WIB timestamp: {wib_timestamp.isoformat()} (ns: {timestamp_ns})")
             
             # Create line protocol entries
             line_protocol_entries = []
@@ -104,7 +146,7 @@ class InfluxConfigService:
             # Join all entries
             line_protocol = "\n".join(line_protocol_entries)
             
-            logger.info(f"Saving config to InfluxDB for device {device_id}: {len(line_protocol_entries)} parameters")
+            logger.info(f"Saving config to InfluxDB for device {device_id}: {len(line_protocol_entries)} parameters at WIB time {wib_timestamp.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             logger.debug(f"Line protocol data: {line_protocol}")
             
             # FIXED: Create HTTP client with SSL handling
@@ -137,7 +179,7 @@ class InfluxConfigService:
                 
                 # Enhanced response handling
                 if response.status_code == 204:
-                    logger.info(f"✅ Successfully saved configuration to InfluxDB for device {device_id}")
+                    logger.info(f"✅ Successfully saved configuration to InfluxDB for device {device_id} at WIB: {wib_timestamp.strftime('%Y-%m-%d %H:%M:%S %Z')}")
                     return True
                 
                 elif response.status_code == 401:
@@ -203,7 +245,8 @@ from(bucket: "{config.BUCKET}")
   |> yield(name: "latest_config")
 '''
             
-            logger.info(f"Loading config from InfluxDB for device {device_id}")
+            current_wib = get_current_timestamp()
+            logger.info(f"Loading config from InfluxDB for device {device_id} at WIB: {current_wib.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             logger.debug(f"Flux query: {flux_query}")
             
             # FIXED: Create HTTP client with SSL handling
@@ -251,7 +294,7 @@ from(bucket: "{config.BUCKET}")
                                     continue
                     
                     if parameters:
-                        logger.info(f"✅ Loaded {len(parameters)} parameters for device {device_id}")
+                        logger.info(f"✅ Loaded {len(parameters)} parameters for device {device_id} at WIB: {current_wib.strftime('%Y-%m-%d %H:%M:%S %Z')}")
                         return parameters
                     else:
                         logger.info(f"No configuration found for device {device_id}")
@@ -285,12 +328,14 @@ async def save_device_config(
 ):
     """
     Save device configuration parameters to InfluxDB
+    Using WIB timezone for timestamps
     """
     try:
         device_id = request.device_id.strip()
         parameters = request.parameters
         
-        logger.info(f"User {current_user.username} saving config for device {device_id}")
+        current_wib = get_current_timestamp()
+        logger.info(f"User {current_user.username} saving config for device {device_id} at WIB: {current_wib.strftime('%Y-%m-%d %H:%M:%S %Z')}")
         logger.debug(f"Parameters to save: {parameters}")
         
         # Enhanced parameter validation
@@ -321,12 +366,12 @@ async def save_device_config(
             success = await InfluxConfigService.save_config_to_influx(device_id, valid_params)
             
             if success:
-                logger.info(f"✅ Configuration saved successfully for device {device_id}")
+                logger.info(f"✅ Configuration saved successfully for device {device_id} at WIB: {current_wib.strftime('%Y-%m-%d %H:%M:%S %Z')}")
                 return ConfigSaveResponse(
                     success=True,
                     message=f"Configuration saved successfully for device {device_id}",
                     device_id=device_id,
-                    timestamp=datetime.utcnow().isoformat()
+                    timestamp=get_current_timestamp_iso()  # WIB timestamp
                 )
             else:
                 raise Exception("InfluxDB save operation returned False")
@@ -355,22 +400,24 @@ async def load_device_config(
 ):
     """
     Load device configuration parameters from InfluxDB
+    Using WIB timezone for timestamps
     """
     try:
         device_id = device_id.strip()
         
-        logger.info(f"User {current_user.username} loading config for device {device_id}")
+        current_wib = get_current_timestamp()
+        logger.info(f"User {current_user.username} loading config for device {device_id} at WIB: {current_wib.strftime('%Y-%m-%d %H:%M:%S %Z')}")
         
         # Load from InfluxDB
         parameters = await InfluxConfigService.load_config_from_influx(device_id)
         
         if parameters:
-            logger.info(f"✅ Configuration loaded successfully for device {device_id}: {len(parameters)} parameters")
+            logger.info(f"✅ Configuration loaded successfully for device {device_id}: {len(parameters)} parameters at WIB: {current_wib.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             return ConfigLoadResponse(
                 success=True,
                 device_id=device_id,
                 parameters=parameters,
-                timestamp=datetime.utcnow().isoformat()
+                timestamp=get_current_timestamp_iso()  # WIB timestamp
             )
         else:
             logger.info(f"No configuration found for device {device_id}, returning defaults")
@@ -390,13 +437,16 @@ async def load_device_config(
             detail=f"Error loading configuration: {str(e)}"
         )
 
-# Enhanced health check endpoint with SSL testing
+# Enhanced health check endpoint with SSL testing and WIB timezone
 @router.get("/health")
 async def config_health_check():
-    """Health check endpoint for configuration service with SSL testing"""
+    """Health check endpoint for configuration service with SSL testing and WIB timezone"""
     try:
         from influx_config import InfluxConfig
         config = InfluxConfig()
+        
+        current_wib = get_current_timestamp()
+        current_system = get_system_timezone_timestamp()
         
         # Validate configuration
         issues = config.validate_config()
@@ -437,7 +487,14 @@ async def config_health_check():
             "influx_connectivity": connectivity_status,
             "ssl_status": ssl_status,
             "config_issues": issues,
-            "timestamp": datetime.utcnow().isoformat()
+            "timezone_info": {
+                "wib_time": current_wib.strftime('%Y-%m-%d %H:%M:%S %Z'),
+                "wib_iso": current_wib.isoformat(),
+                "system_time": current_system.strftime('%Y-%m-%d %H:%M:%S'),
+                "system_iso": current_system.isoformat(),
+                "timezone": "WIB (UTC+7)"
+            },
+            "timestamp": get_current_timestamp_iso()  # WIB timestamp
         }
         
         if influx_error:
@@ -451,22 +508,32 @@ async def config_health_check():
             "status": "unhealthy",
             "service": "device-configuration",
             "error": str(e),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": get_current_timestamp_iso()  # WIB timestamp
         }
 
-# Debug endpoint with SSL testing
+# Debug endpoint with SSL testing and WIB timezone
 @router.get("/debug/{device_id}")
 async def debug_device_config(device_id: str):
-    """Debug endpoint untuk check device configuration di InfluxDB with SSL info"""
+    """Debug endpoint untuk check device configuration di InfluxDB with SSL info and WIB timezone"""
     try:
         from influx_config import InfluxConfig
         config = InfluxConfig()
+        
+        current_wib = get_current_timestamp()
+        current_system = get_system_timezone_timestamp()
         
         if not config.is_enabled():
             return {
                 "device_id": device_id,
                 "status": "InfluxDB validation disabled",
-                "timestamp": datetime.utcnow().isoformat()
+                "timezone_info": {
+                    "wib_time": current_wib.strftime('%Y-%m-%d %H:%M:%S %Z'),
+                    "wib_iso": current_wib.isoformat(),
+                    "system_time": current_system.strftime('%Y-%m-%d %H:%M:%S'),
+                    "system_iso": current_system.isoformat(),
+                    "timezone": "WIB (UTC+7)"
+                },
+                "timestamp": get_current_timestamp_iso()
             }
         
         # Validate config
@@ -476,7 +543,14 @@ async def debug_device_config(device_id: str):
                 "device_id": device_id,
                 "status": "configuration_error",
                 "issues": issues,
-                "timestamp": datetime.utcnow().isoformat()
+                "timezone_info": {
+                    "wib_time": current_wib.strftime('%Y-%m-%d %H:%M:%S %Z'),
+                    "wib_iso": current_wib.isoformat(),
+                    "system_time": current_system.strftime('%Y-%m-%d %H:%M:%S'),
+                    "system_iso": current_system.isoformat(),
+                    "timezone": "WIB (UTC+7)"
+                },
+                "timestamp": get_current_timestamp_iso()
             }
         
         # Test SSL connection
@@ -511,7 +585,14 @@ from(bucket: "{config.BUCKET}")
                 "config_bucket": config.BUCKET,
                 "config_org": config.ORG,
                 "config_host": config.HOST,
-                "timestamp": datetime.utcnow().isoformat()
+                "timezone_info": {
+                    "wib_time": current_wib.strftime('%Y-%m-%d %H:%M:%S %Z'),
+                    "wib_iso": current_wib.isoformat(),
+                    "system_time": current_system.strftime('%Y-%m-%d %H:%M:%S'),
+                    "system_iso": current_system.isoformat(),
+                    "timezone": "WIB (UTC+7)"
+                },
+                "timestamp": get_current_timestamp_iso()  # WIB timestamp
             }
             
     except Exception as e:
@@ -521,5 +602,47 @@ from(bucket: "{config.BUCKET}")
             "status": "error",
             "error": str(e),
             "ssl_handling": "error",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": get_current_timestamp_iso()  # WIB timestamp
+        }
+
+# Additional endpoint to show timezone comparison
+@router.get("/timezone-info")
+async def get_timezone_info():
+    """
+    Endpoint to show current time in different formats for testing
+    """
+    try:
+        wib_time = get_current_timestamp()
+        system_time = get_system_timezone_timestamp()
+        utc_time = datetime.now(timezone.utc)
+        
+        return {
+            "timezone_comparison": {
+                "wib": {
+                    "datetime": wib_time.strftime('%Y-%m-%d %H:%M:%S %Z'),
+                    "iso": wib_time.isoformat(),
+                    "timestamp": wib_time.timestamp(),
+                    "timezone": "WIB (UTC+7)"
+                },
+                "system": {
+                    "datetime": system_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    "iso": system_time.isoformat(),
+                    "timestamp": system_time.timestamp(),
+                    "timezone": "System Default (Ubuntu)"
+                },
+                "utc": {
+                    "datetime": utc_time.strftime('%Y-%m-%d %H:%M:%S %Z'),
+                    "iso": utc_time.isoformat(),
+                    "timestamp": utc_time.timestamp(),
+                    "timezone": "UTC+0"
+                }
+            },
+            "recommended": "wib",
+            "note": "All application timestamps now use WIB (UTC+7) timezone"
+        }
+        
+    except Exception as e:
+        return {
+            "error": str(e),
+            "timestamp": get_current_timestamp_iso()
         }
